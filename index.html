@@ -1,12 +1,192 @@
-<html>
-<body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <title>GG AI – Powered by Puter.js</title>
     <script src="https://js.puter.com/v2/"></script>
-    <script>
-    (async () => {
-        const chat_resp = await puter.ai.chat('Tell me something I might not know about chemistry.', {model: 'claude-opus-4', stream: true });
-        puter.print('<h1>Claude Sonnet 4:</h1>');
-        for await ( const part of chat_resp ) puter.print(part?.text?.replaceAll('\n', '<br>'));
-    })();
-    </script>
+    <style>
+        body{margin:0;font-family:system-ui;background:#111;color:#eee;display:flex;height:100vh}
+        #sidebar{min-width:240px;background:#1e1e1e;border-right:1px solid #333;padding:10px;display:flex;flex-direction:column}
+        #sidebar button{width:100%;margin:4px 0;padding:8px;border:none;border-radius:4px;background:#222;color:#eee;cursor:pointer}
+        #sidebar button:hover{background:#333}
+        #chat{flex:1;display:flex;flex-direction:column}
+        #messages{flex:1;padding:10px;overflow-y:auto}
+        .msg{margin:6px 0;padding:8px;border-radius:6px;max-width:75%;word-break:break-word}
+        .user{background:#0a4c6b;margin-left:auto}
+        .bot{background:#333}
+        #controls{display:flex;align-items:center;padding:10px;border-top:1px solid #333}
+        #controls input[type=text]{flex:1;padding:8px;border-radius:4px;border:none;margin-right:6px}
+        #controls input[type=file]{display:none}
+        #controls label{background:#0a4c6b;color:#fff;padding:8px 12px;border-radius:4px;margin-right:6px;cursor:pointer}
+        #controls select{background:#222;color:#eee;border:none;padding:6px;border-radius:4px}
+        #controls button{background:#0a4c6b;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer}
+        #controls button:disabled{opacity:.5;cursor:not-allowed}
+    </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div id="sidebar">
+    <button onclick="newChat()">➕ New Chat</button>
+    <div id="history"></div>
+</div>
+
+<!-- Chat -->
+<div id="chat">
+    <div id="messages"></div>
+    <div id="controls">
+        <input id="msgInput" type="text" placeholder="Type a message…" onkeydown="if(event.key==='Enter')sendMsg()"/>
+        <label for="fileInput">📎</label>
+        <input id="fileInput" type="file" multiple onchange="handleFiles()"/>
+        <select id="modelSelect">
+            <option value="gpt-5">GPT 5</option>
+            <option value="claude-opus-4">Claude Opus 4</option>
+            <option value="claude-sonnet-4">Claude Sonnet 4</option>
+        </select>
+        <button onclick="sendMsg()" id="sendBtn">Send</button>
+    </div>
+</div>
+
+<script>
+/* ---------- GLOBAL STATE ---------- */
+let activeThreadId = localStorage.getItem('activeThreadId') || generateId();
+let threads = JSON.parse(localStorage.getItem('threads') || '{}');
+if (!threads[activeThreadId]) threads[activeThreadId] = {title:'New Chat', msgs:[]};
+renderMessages();
+renderHistory();
+
+/* ---------- HELPERS ---------- */
+function generateId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
+function saveThreads(){ localStorage.setItem('threads', JSON.stringify(threads)); }
+function scrollDown(){ const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
+
+/* ---------- CHAT HISTORY ---------- */
+function renderHistory(){
+    const h=document.getElementById('history'); h.innerHTML='';
+    Object.entries(threads).forEach(([id,th])=>{
+        const b=document.createElement('button');
+        b.textContent = th.title || 'New Chat';
+        b.onclick = ()=>switchThread(id);
+        if(id===activeThreadId) b.style.background='#0a4c6b';
+        h.appendChild(b);
+    });
+}
+
+function switchThread(id){
+    activeThreadId=id;
+    localStorage.setItem('activeThreadId', id);
+    renderMessages();
+    renderHistory();
+}
+
+function newChat(){
+    const id=generateId();
+    threads[id]={title:'New Chat', msgs:[]};
+    activeThreadId=id;
+    saveThreads();
+    renderMessages();
+    renderHistory();
+}
+
+/* ---------- MESSAGES ---------- */
+function renderMessages(){
+    const m=document.getElementById('messages'); m.innerHTML='';
+    threads[activeThreadId].msgs.forEach(({role,text,image})=>{
+        const div=document.createElement('div');
+        div.className='msg '+(role==='user'?'user':'bot');
+        if(image){
+            const img=document.createElement('img');
+            img.src=image; img.style.maxWidth='200px'; img.style.borderRadius='6px';
+            div.appendChild(img);
+            div.appendChild(document.createElement('br'));
+        }
+        div.appendChild(document.createTextNode(text));
+        m.appendChild(div);
+    });
+    scrollDown();
+}
+
+function addMsg(role,text,image){
+    threads[activeThreadId].msgs.push({role,text,image});
+    saveThreads();
+    renderMessages();
+}
+
+/* ---------- FILE UPLOAD ---------- */
+let uploadedFiles=[];   // {type,url,name}
+
+async function handleFiles(){
+    const files=[...document.getElementById('fileInput').files];
+    for(const f of files){
+        const path = await puter.fs.upload(f, '/tmp/'+f.name);
+        uploadedFiles.push({type:f.type, url:path.url, name:f.name});
+        addMsg('user',`📎 Uploaded ${f.name}`);
+    }
+}
+
+/* ---------- SEND ---------- */
+async function sendMsg(){
+    const input=document.getElementById('msgInput');
+    const text=input.value.trim();
+    if(!text && uploadedFiles.length===0) return;
+
+    addMsg('user', text || 'Uploaded file(s)');
+    input.value='';
+
+    // Disable UI
+    document.getElementById('sendBtn').disabled=true;
+
+    const model=document.getElementById('modelSelect').value;
+
+    try{
+        let prompt=text;
+        if(uploadedFiles.length){
+            if(uploadedFiles.some(f=>f.type.startsWith('image/'))){
+                // Vision prompt
+                const imgUrl=uploadedFiles.find(f=>f.type.startsWith('image/')).url;
+                const stream = await puter.ai.chat(prompt,{model,stream:true,image:imgUrl});
+                await streamReply(stream);
+            }else{
+                prompt+=" [Attached file(s): "+uploadedFiles.map(f=>f.name).join(', ')+"]";
+                const stream = await puter.ai.chat(prompt,{model,stream:true});
+                await streamReply(stream);
+            }
+        }else{
+            const stream = await puter.ai.chat(prompt,{model,stream:true});
+            await streamReply(stream);
+        }
+    }catch(err){
+        addMsg('bot','⚠️ Error: '+err.message);
+    }finally{
+        uploadedFiles=[];
+        document.getElementById('sendBtn').disabled=false;
+    }
+}
+
+/* ---------- STREAM ---------- */
+async function streamReply(stream){
+    let buffer='';
+    const div=document.createElement('div'); div.className='msg bot';
+    document.getElementById('messages').appendChild(div);
+    scrollDown();
+
+    for await (const chunk of stream){
+        const txt=chunk?.text || '';
+        buffer+=txt;
+        div.innerText=buffer;
+        scrollDown();
+    }
+    threads[activeThreadId].msgs.push({role:'bot',text:buffer});
+    saveThreads();
+
+    // Rename thread to first user message if still "New Chat"
+    if(threads[activeThreadId].title==='New Chat' && threads[activeThreadId].msgs.length){
+        const firstUser=threads[activeThreadId].msgs.find(m=>m.role==='user');
+        if(firstUser) threads[activeThreadId].title = firstUser.text.slice(0,30);
+        saveThreads();
+        renderHistory();
+    }
+}
+</script>
 </body>
 </html>
