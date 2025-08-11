@@ -9,6 +9,7 @@
         #sidebar{min-width:240px;background:#1e1e1e;border-right:1px solid #333;padding:10px;display:flex;flex-direction:column}
         #sidebar button{width:100%;margin:4px 0;padding:8px;border:none;border-radius:4px;background:#222;color:#eee;cursor:pointer}
         #sidebar button:hover{background:#333}
+        #sidebar button.active{background:#0a4c6b}
         #chat{flex:1;display:flex;flex-direction:column}
         #messages{flex:1;padding:10px;overflow-y:auto}
         .msg{margin:6px 0;padding:8px;border-radius:6px;max-width:75%;word-break:break-word}
@@ -21,6 +22,7 @@
         #controls select{background:#222;color:#eee;border:none;padding:6px;border-radius:4px}
         #controls button{background:#0a4c6b;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer}
         #controls button:disabled{opacity:.5;cursor:not-allowed}
+        .status{font-size:12px;color:#888;text-align:center;padding:5px}
     </style>
 </head>
 <body>
@@ -28,6 +30,7 @@
 <!-- Sidebar -->
 <div id="sidebar">
     <button onclick="newChat()">➕ New Chat</button>
+    <div class="status" id="chatStatus">Fresh Session</div>
     <div id="history"></div>
 </div>
 
@@ -51,52 +54,116 @@
 /* ---------- GLOBAL STATE ---------- */
 let activeThreadId = localStorage.getItem('activeThreadId') || generateId();
 let threads = JSON.parse(localStorage.getItem('threads') || '{}');
-if (!threads[activeThreadId]) threads[activeThreadId] = {title:'New Chat', msgs:[]};
+let conversationContext = []; // This will be reset for each new chat
+let sessionId = generateId(); // Unique session ID for API context
+
+if (!threads[activeThreadId]) {
+    threads[activeThreadId] = {title:'New Chat', msgs:[], sessionId: sessionId};
+}
+
+// Initialize conversation context from active thread
+initializeContext();
 renderMessages();
 renderHistory();
+updateStatus();
 
 /* ---------- HELPERS ---------- */
 function generateId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
-function saveThreads(){ localStorage.setItem('threads', JSON.stringify(threads)); }
-function scrollDown(){ const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
+
+function saveThreads(){ 
+    localStorage.setItem('threads', JSON.stringify(threads)); 
+    localStorage.setItem('activeThreadId', activeThreadId);
+}
+
+function scrollDown(){ 
+    const m=document.getElementById('messages'); 
+    m.scrollTop=m.scrollHeight; 
+}
+
+function updateStatus(){
+    const status = document.getElementById('chatStatus');
+    const msgCount = conversationContext.length;
+    if(msgCount === 0) {
+        status.textContent = 'Fresh Session';
+        status.style.color = '#4a9';
+    } else {
+        status.textContent = `${msgCount} messages in context`;
+        status.style.color = '#888';
+    }
+}
+
+function initializeContext(){
+    // Reset conversation context when switching threads
+    conversationContext = [];
+    sessionId = threads[activeThreadId].sessionId || generateId();
+    if(!threads[activeThreadId].sessionId) {
+        threads[activeThreadId].sessionId = sessionId;
+        saveThreads();
+    }
+}
 
 /* ---------- CHAT HISTORY ---------- */
 function renderHistory(){
-    const h=document.getElementById('history'); h.innerHTML='';
-    Object.entries(threads).forEach(([id,th])=>{
+    const h=document.getElementById('history'); 
+    h.innerHTML='';
+    
+    // Sort threads by last activity (most recent first)
+    const sortedThreads = Object.entries(threads).sort((a, b) => {
+        const aTime = a[1].lastActivity || 0;
+        const bTime = b[1].lastActivity || 0;
+        return bTime - aTime;
+    });
+    
+    sortedThreads.forEach(([id, th])=>{
         const b=document.createElement('button');
         b.textContent = th.title || 'New Chat';
         b.onclick = ()=>switchThread(id);
-        if(id===activeThreadId) b.style.background='#0a4c6b';
+        if(id === activeThreadId) b.classList.add('active');
         h.appendChild(b);
     });
 }
 
 function switchThread(id){
-    activeThreadId=id;
-    localStorage.setItem('activeThreadId', id);
+    activeThreadId = id;
+    initializeContext(); // Reset context for the switched thread
     renderMessages();
     renderHistory();
+    updateStatus();
 }
 
 function newChat(){
-    const id=generateId();
-    threads[id]={title:'New Chat', msgs:[]};
-    activeThreadId=id;
+    const id = generateId();
+    sessionId = generateId(); // New session ID for fresh context
+    threads[id] = {
+        title: 'New Chat', 
+        msgs: [],
+        sessionId: sessionId,
+        lastActivity: Date.now()
+    };
+    activeThreadId = id;
+    conversationContext = []; // Fresh context
     saveThreads();
     renderMessages();
     renderHistory();
+    updateStatus();
+    
+    // Clear any uploaded files
+    uploadedFiles = [];
+    document.getElementById('fileInput').value = '';
 }
 
 /* ---------- MESSAGES ---------- */
 function renderMessages(){
-    const m=document.getElementById('messages'); m.innerHTML='';
+    const m=document.getElementById('messages'); 
+    m.innerHTML='';
     threads[activeThreadId].msgs.forEach(({role,text,image})=>{
         const div=document.createElement('div');
         div.className='msg '+(role==='user'?'user':'bot');
         if(image){
             const img=document.createElement('img');
-            img.src=image; img.style.maxWidth='200px'; img.style.borderRadius='6px';
+            img.src=image; 
+            img.style.maxWidth='200px'; 
+            img.style.borderRadius='6px';
             div.appendChild(img);
             div.appendChild(document.createElement('br'));
         }
@@ -106,10 +173,22 @@ function renderMessages(){
     scrollDown();
 }
 
-function addMsg(role,text,image){
-    threads[activeThreadId].msgs.push({role,text,image});
+function addMsg(role, text, image){
+    const msg = {role, text, image, timestamp: Date.now()};
+    threads[activeThreadId].msgs.push(msg);
+    threads[activeThreadId].lastActivity = Date.now();
+    
+    // Add to conversation context (this is what gets sent to API)
+    conversationContext.push({role, content: text});
+    
+    // Keep context manageable - limit to last 20 messages
+    if(conversationContext.length > 20) {
+        conversationContext = conversationContext.slice(-20);
+    }
+    
     saveThreads();
     renderMessages();
+    updateStatus();
 }
 
 /* ---------- FILE UPLOAD ---------- */
@@ -118,9 +197,14 @@ let uploadedFiles=[];   // {type,url,name}
 async function handleFiles(){
     const files=[...document.getElementById('fileInput').files];
     for(const f of files){
-        const path = await puter.fs.upload(f, '/tmp/'+f.name);
-        uploadedFiles.push({type:f.type, url:path.url, name:f.name});
-        addMsg('user',`📎 Uploaded ${f.name}`);
+        try {
+            const path = await puter.fs.upload(f, '/tmp/'+f.name);
+            uploadedFiles.push({type:f.type, url:path.url, name:f.name});
+            addMsg('user',`📎 Uploaded ${f.name}`);
+        } catch(err) {
+            console.error('File upload error:', err);
+            addMsg('bot', `⚠️ Failed to upload ${f.name}: ${err.message}`);
+        }
     }
 }
 
@@ -130,35 +214,48 @@ async function sendMsg(){
     const text=input.value.trim();
     if(!text && uploadedFiles.length===0) return;
 
-    addMsg('user', text || 'Uploaded file(s)');
+    const userMessage = text || 'Uploaded file(s)';
+    addMsg('user', userMessage);
     input.value='';
 
     // Disable UI
     document.getElementById('sendBtn').disabled=true;
-
+    
     const model=document.getElementById('modelSelect').value;
 
     try{
-        let prompt=text;
+        let prompt = text;
+        let requestOptions = {
+            model: model,
+            stream: true,
+            session: sessionId // Use session ID for context
+        };
+
         if(uploadedFiles.length){
             if(uploadedFiles.some(f=>f.type.startsWith('image/'))){
                 // Vision prompt
                 const imgUrl=uploadedFiles.find(f=>f.type.startsWith('image/')).url;
-                const stream = await puter.ai.chat(prompt,{model,stream:true,image:imgUrl});
-                await streamReply(stream);
-            }else{
-                prompt+=" [Attached file(s): "+uploadedFiles.map(f=>f.name).join(', ')+"]";
-                const stream = await puter.ai.chat(prompt,{model,stream:true});
-                await streamReply(stream);
+                requestOptions.image = imgUrl;
+            } else {
+                prompt += " [Attached file(s): " + uploadedFiles.map(f=>f.name).join(', ') + "]";
             }
-        }else{
-            const stream = await puter.ai.chat(prompt,{model,stream:true});
-            await streamReply(stream);
         }
+
+        // Send only the current message, let the session handle context
+        const stream = await puter.ai.chat(prompt, requestOptions);
+        await streamReply(stream);
+        
     }catch(err){
-        addMsg('bot','⚠️ Error: '+err.message);
+        console.error('Send error:', err);
+        addMsg('bot','⚠️ Error: ' + err.message);
+        
+        // If it's a context/session error, suggest starting a new chat
+        if(err.message.includes('context') || err.message.includes('session') || err.message.includes('limit')) {
+            addMsg('bot', '💡 Try starting a new chat to reset the session if this error persists.');
+        }
     }finally{
         uploadedFiles=[];
+        document.getElementById('fileInput').value = '';
         document.getElementById('sendBtn').disabled=false;
     }
 }
@@ -166,27 +263,52 @@ async function sendMsg(){
 /* ---------- STREAM ---------- */
 async function streamReply(stream){
     let buffer='';
-    const div=document.createElement('div'); div.className='msg bot';
+    const div=document.createElement('div'); 
+    div.className='msg bot';
     document.getElementById('messages').appendChild(div);
     scrollDown();
 
-    for await (const chunk of stream){
-        const txt=chunk?.text || '';
-        buffer+=txt;
-        div.innerText=buffer;
-        scrollDown();
-    }
-    threads[activeThreadId].msgs.push({role:'bot',text:buffer});
-    saveThreads();
-
-    // Rename thread to first user message if still "New Chat"
-    if(threads[activeThreadId].title==='New Chat' && threads[activeThreadId].msgs.length){
-        const firstUser=threads[activeThreadId].msgs.find(m=>m.role==='user');
-        if(firstUser) threads[activeThreadId].title = firstUser.text.slice(0,30);
-        saveThreads();
-        renderHistory();
+    try {
+        for await (const chunk of stream){
+            const txt=chunk?.text || '';
+            buffer+=txt;
+            div.innerText=buffer;
+            scrollDown();
+        }
+        
+        // Add bot response to conversation context
+        addMsg('bot', buffer);
+        
+        // Auto-rename thread based on first user message
+        if(threads[activeThreadId].title === 'New Chat' && threads[activeThreadId].msgs.length >= 2){
+            const firstUser = threads[activeThreadId].msgs.find(m=>m.role==='user');
+            if(firstUser) {
+                threads[activeThreadId].title = firstUser.text.slice(0, 30) + (firstUser.text.length > 30 ? '...' : '');
+                saveThreads();
+                renderHistory();
+            }
+        }
+    } catch(err) {
+        console.error('Stream error:', err);
+        div.innerText = buffer + '\n\n⚠️ Stream interrupted: ' + err.message;
+        addMsg('bot', buffer + '\n\n⚠️ Stream interrupted: ' + err.message);
     }
 }
+
+/* ---------- CLEANUP ---------- */
+// Clean up old temporary files periodically
+setInterval(() => {
+    if(uploadedFiles.length === 0 && Math.random() < 0.1) {
+        // Occasionally clean up old threads (keep only last 50)
+        const threadEntries = Object.entries(threads);
+        if(threadEntries.length > 50) {
+            const sorted = threadEntries.sort((a, b) => (b[1].lastActivity || 0) - (a[1].lastActivity || 0));
+            const toKeep = sorted.slice(0, 50);
+            threads = Object.fromEntries(toKeep);
+            saveThreads();
+        }
+    }
+}, 60000); // Check every minute
 </script>
 </body>
 </html>
