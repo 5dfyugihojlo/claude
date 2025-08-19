@@ -2,8 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
-    <title>GG AI – Powered by Puter.js</title>
+    <title>GG AI — Powered by Puter.js</title>
     <script src="https://js.puter.com/v2/"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/dark.min.css">
     <style>
         body{margin:0;font-family:system-ui;background:#111;color:#eee;display:flex;height:100vh}
         #sidebar{min-width:240px;background:#1e1e1e;border-right:1px solid #333;padding:10px;display:flex;flex-direction:column}
@@ -12,9 +15,88 @@
         #sidebar button.active{background:#0a4c6b}
         #chat{flex:1;display:flex;flex-direction:column}
         #messages{flex:1;padding:10px;overflow-y:auto}
-        .msg{margin:6px 0;padding:8px;border-radius:6px;max-width:75%;word-break:break-word}
+        .msg{margin:6px 0;padding:8px;border-radius:6px;max-width:75%;word-break:break-word;line-height:1.6}
         .user{background:#0a4c6b;margin-left:auto}
         .bot{background:#333}
+        
+        /* Enhanced formatting for bot messages */
+        .bot p{margin:0.8em 0;line-height:1.6}
+        .bot ul, .bot ol{margin:0.8em 0;padding-left:1.5em}
+        .bot li{margin:0.3em 0}
+        .bot h1, .bot h2, .bot h3, .bot h4, .bot h5, .bot h6{margin:1em 0 0.5em 0;color:#fff}
+        .bot blockquote{border-left:3px solid #0a4c6b;padding-left:1em;margin:1em 0;font-style:italic}
+        .bot strong{color:#fff}
+        .bot em{color:#ccc}
+        
+        /* Code block styling */
+        .code-container{
+            position:relative;
+            margin:1em 0;
+            background:#1a1a1a;
+            border:1px solid #333;
+            border-radius:8px;
+            overflow:hidden;
+        }
+        .code-header{
+            background:#2a2a2a;
+            padding:8px 12px;
+            border-bottom:1px solid #333;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            font-size:12px;
+            color:#888;
+        }
+        .code-language{
+            font-weight:bold;
+            color:#0a84ff;
+        }
+        .code-actions{
+            display:flex;
+            gap:8px;
+        }
+        .code-btn{
+            background:#0a4c6b;
+            color:#fff;
+            border:none;
+            padding:4px 8px;
+            border-radius:4px;
+            cursor:pointer;
+            font-size:11px;
+            transition:background 0.2s;
+        }
+        .code-btn:hover{
+            background:#0d5a7a;
+        }
+        .code-btn:active{
+            background:#094158;
+        }
+        .code-content{
+            overflow-x:auto;
+        }
+        .code-content pre{
+            margin:0;
+            padding:12px;
+            background:transparent;
+        }
+        .code-content code{
+            background:transparent;
+            color:#e6e6e6;
+            font-family:'Courier New', monospace;
+            font-size:13px;
+            line-height:1.4;
+        }
+        
+        /* Inline code */
+        .bot :not(pre) > code{
+            background:#2a2a2a;
+            color:#e6e6e6;
+            padding:2px 6px;
+            border-radius:3px;
+            font-family:'Courier New', monospace;
+            font-size:0.9em;
+        }
+        
         #controls{display:flex;align-items:center;padding:10px;border-top:1px solid #333}
         #controls input[type=text]{flex:1;padding:8px;border-radius:4px;border:none;margin-right:6px}
         #controls input[type=file]{display:none}
@@ -23,6 +105,23 @@
         #controls button{background:#0a4c6b;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer}
         #controls button:disabled{opacity:.5;cursor:not-allowed}
         .status{font-size:12px;color:#888;text-align:center;padding:5px}
+        
+        /* Copy notification */
+        .copy-notification{
+            position:fixed;
+            top:20px;
+            right:20px;
+            background:#0a4c6b;
+            color:#fff;
+            padding:8px 16px;
+            border-radius:6px;
+            z-index:1000;
+            opacity:0;
+            transition:opacity 0.3s;
+        }
+        .copy-notification.show{
+            opacity:1;
+        }
     </style>
 </head>
 <body>
@@ -39,7 +138,7 @@
     <div id="messages"></div>
     <div id="controls">
         <input id="msgInput" type="text" placeholder="Type a message…" onkeydown="if(event.key==='Enter')sendMsg()"/>
-        <label for="fileInput">📎</label>
+        <label for="fileInput">🔎</label>
         <input id="fileInput" type="file" multiple onchange="handleFiles()"/>
         <select id="modelSelect">
             <option value="gpt-5">GPT 5</option>
@@ -49,6 +148,9 @@
         <button onclick="sendMsg()" id="sendBtn">Send</button>
     </div>
 </div>
+
+<!-- Copy notification -->
+<div id="copyNotification" class="copy-notification">Copied to clipboard!</div>
 
 <script>
 /* ---------- GLOBAL STATE ---------- */
@@ -100,6 +202,142 @@ function initializeContext(){
         threads[activeThreadId].sessionId = sessionId;
         saveThreads();
     }
+}
+
+/* ---------- MARKDOWN & CODE PROCESSING ---------- */
+function processMarkdown(text) {
+    // Configure marked for better code block handling
+    marked.setOptions({
+        highlight: function(code, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+                try {
+                    return hljs.highlight(code, { language: lang }).value;
+                } catch (__) {}
+            }
+            return hljs.highlightAuto(code).value;
+        },
+        breaks: true,
+        gfm: true
+    });
+    
+    return marked.parse(text);
+}
+
+function enhanceCodeBlocks(html) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    
+    const codeBlocks = tempDiv.querySelectorAll('pre code');
+    codeBlocks.forEach((codeElement, index) => {
+        const preElement = codeElement.parentElement;
+        const code = codeElement.textContent;
+        const language = codeElement.className.match(/language-(\w+)/)?.[1] || 'text';
+        
+        // Create enhanced code container
+        const container = document.createElement('div');
+        container.className = 'code-container';
+        
+        const header = document.createElement('div');
+        header.className = 'code-header';
+        
+        const langSpan = document.createElement('span');
+        langSpan.className = 'code-language';
+        langSpan.textContent = language.toUpperCase();
+        
+        const actions = document.createElement('div');
+        actions.className = 'code-actions';
+        
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'code-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.onclick = () => copyCode(code);
+        
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'code-btn';
+        downloadBtn.textContent = 'Download';
+        downloadBtn.onclick = () => downloadCode(code, language, index);
+        
+        actions.appendChild(copyBtn);
+        actions.appendChild(downloadBtn);
+        
+        header.appendChild(langSpan);
+        header.appendChild(actions);
+        
+        const content = document.createElement('div');
+        content.className = 'code-content';
+        content.appendChild(preElement.cloneNode(true));
+        
+        container.appendChild(header);
+        container.appendChild(content);
+        
+        preElement.parentElement.replaceChild(container, preElement);
+    });
+    
+    return tempDiv.innerHTML;
+}
+
+function copyCode(code) {
+    navigator.clipboard.writeText(code).then(() => {
+        showCopyNotification();
+    }).catch(err => {
+        console.error('Failed to copy code:', err);
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = code;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        showCopyNotification();
+    });
+}
+
+function downloadCode(code, language, index) {
+    const extensions = {
+        'javascript': 'js',
+        'typescript': 'ts',
+        'python': 'py',
+        'java': 'java',
+        'cpp': 'cpp',
+        'c': 'c',
+        'csharp': 'cs',
+        'html': 'html',
+        'css': 'css',
+        'php': 'php',
+        'ruby': 'rb',
+        'go': 'go',
+        'rust': 'rs',
+        'swift': 'swift',
+        'kotlin': 'kt',
+        'sql': 'sql',
+        'json': 'json',
+        'xml': 'xml',
+        'yaml': 'yml',
+        'shell': 'sh',
+        'bash': 'sh'
+    };
+    
+    const extension = extensions[language.toLowerCase()] || 'txt';
+    const filename = `code_${index + 1}.${extension}`;
+    
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function showCopyNotification() {
+    const notification = document.getElementById('copyNotification');
+    notification.classList.add('show');
+    setTimeout(() => {
+        notification.classList.remove('show');
+    }, 2000);
 }
 
 /* ---------- CHAT HISTORY ---------- */
@@ -167,7 +405,17 @@ function renderMessages(){
             div.appendChild(img);
             div.appendChild(document.createElement('br'));
         }
-        div.appendChild(document.createTextNode(text));
+        
+        if(role === 'bot') {
+            // Process markdown and enhance code blocks for bot messages
+            const markdownHtml = processMarkdown(text);
+            const enhancedHtml = enhanceCodeBlocks(markdownHtml);
+            div.innerHTML = div.innerHTML + enhancedHtml;
+        } else {
+            // Keep user messages as plain text
+            div.appendChild(document.createTextNode(text));
+        }
+        
         m.appendChild(div);
     });
     scrollDown();
@@ -200,7 +448,7 @@ async function handleFiles(){
         try {
             const path = await puter.fs.upload(f, '/tmp/'+f.name);
             uploadedFiles.push({type:f.type, url:path.url, name:f.name});
-            addMsg('user',`📎 Uploaded ${f.name}`);
+            addMsg('user',`🔎 Uploaded ${f.name}`);
         } catch(err) {
             console.error('File upload error:', err);
             addMsg('bot', `⚠️ Failed to upload ${f.name}: ${err.message}`);
@@ -272,12 +520,32 @@ async function streamReply(stream){
         for await (const chunk of stream){
             const txt=chunk?.text || '';
             buffer+=txt;
-            div.innerText=buffer;
+            
+            // For streaming, show plain text first, then enhance on completion
+            div.innerHTML = buffer.replace(/\n/g, '<br>');
             scrollDown();
         }
         
-        // Add bot response to conversation context
-        addMsg('bot', buffer);
+        // Once streaming is complete, process markdown and enhance code blocks
+        const markdownHtml = processMarkdown(buffer);
+        const enhancedHtml = enhanceCodeBlocks(markdownHtml);
+        div.innerHTML = enhancedHtml;
+        
+        // Add bot response to thread but not to context (avoid duplication)
+        const msg = {role: 'bot', text: buffer, timestamp: Date.now()};
+        threads[activeThreadId].msgs[threads[activeThreadId].msgs.length - 1] = msg;
+        threads[activeThreadId].lastActivity = Date.now();
+        
+        // Add to conversation context
+        conversationContext.push({role: 'bot', content: buffer});
+        
+        // Keep context manageable
+        if(conversationContext.length > 20) {
+            conversationContext = conversationContext.slice(-20);
+        }
+        
+        saveThreads();
+        updateStatus();
         
         // Auto-rename thread based on first user message
         if(threads[activeThreadId].title === 'New Chat' && threads[activeThreadId].msgs.length >= 2){
@@ -290,8 +558,12 @@ async function streamReply(stream){
         }
     } catch(err) {
         console.error('Stream error:', err);
-        div.innerText = buffer + '\n\n⚠️ Stream interrupted: ' + err.message;
-        addMsg('bot', buffer + '\n\n⚠️ Stream interrupted: ' + err.message);
+        div.innerHTML = buffer.replace(/\n/g, '<br>') + '<br><br>⚠️ Stream interrupted: ' + err.message;
+        
+        // Add the interrupted message to thread
+        const msg = {role: 'bot', text: buffer + '\n\n⚠️ Stream interrupted: ' + err.message, timestamp: Date.now()};
+        threads[activeThreadId].msgs[threads[activeThreadId].msgs.length - 1] = msg;
+        saveThreads();
     }
 }
 
@@ -309,6 +581,11 @@ setInterval(() => {
         }
     }
 }, 60000); // Check every minute
+
+// Initialize syntax highlighting
+document.addEventListener('DOMContentLoaded', function() {
+    hljs.highlightAll();
+});
 </script>
 </body>
 </html>
